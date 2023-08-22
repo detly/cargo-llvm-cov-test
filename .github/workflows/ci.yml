@@ -8,6 +8,7 @@ env:
 
 jobs:
   build:
+    name: Build instrumented tests
     runs-on: ubuntu-latest
     container:
       image: rust:1.71-slim
@@ -34,11 +35,60 @@ jobs:
       - name: Build instrumented test binaries and archive them
         shell: bash
         run: |
-          # Test coverage
+          # Configure everything for coverage instrumentation.
           cargo llvm-cov show-env --export-prefix | tee "$COVERAGE_VARS"
           source "$COVERAGE_VARS"
           # Build everything to make sure nothing breaks
           cargo build --workspace --all-targets
-          # Run Nextest
-          cargo nextest run --workspace --all-targets
+          # Use Nextest to archive the necessary test binaries.
+          cargo nextest archive --workspace --all-targets \
+            --archive-file "$NEXTEST_ARCHIVE"
+      - name: Store Nextest archive as artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: nextest-archive
+          path: ${{ env.NEXTEST_ARCHIVE }}
+          retention-days: 1
+          if-no-files-found: error
+
+  test:
+    name: Run tests
+    needs: build
+    runs-on: ubuntu-latest
+    container:
+      image: rust:1.71-slim
+      env:
+        RUST_BACKTRACE: full
+        DEBIAN_FRONTEND: noninteractive
+        CARGO_TERM_COLOR: always
+        CARGO_LLVM_COV_SETUP: "no"
+    steps:
+      # General build dependencies. Libssl-dev is required to build
+      # cargo-nextest.
+      - name: Update and install build dependencies
+        run: |
+          apt-get update
+          apt-get -y install libssl-dev pkg-config
+      - name: Install LLVM tools
+        run: rustup component add llvm-tools-preview
+      - name: Install Rust tools
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov,cargo-nextest
+      - name: Check out code
+        uses: actions/checkout@v3
+      - name: Retrieve Nextest archive
+        uses: actions/download-artifact@v3
+        with:
+          name: nextest-archive
+      - name: Run tests from archive and report coverage
+        shell: bash
+        run: |
+          # Configure everything for coverage instrumentation.
+          cargo llvm-cov show-env --export-prefix | tee "$COVERAGE_VARS"
+          source "$COVERAGE_VARS"
+          # Run tests via nextest binary
+          cargo nextest run --archive-file "$NEXTEST_ARCHIVE"
+          # Display results to stdout
           cargo llvm-cov report
+
